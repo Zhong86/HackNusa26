@@ -8,3 +8,4 @@ scikit-learn
 xgboost
 imbalanced-learn
 joblib
+requests>=2.31

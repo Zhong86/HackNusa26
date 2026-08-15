@@ -7,16 +7,23 @@ import joblib
 from sklearn.metrics import (
     precision_score, recall_score, f1_score, confusion_matrix, classification_report
 )
-from ml.features.extract import FEATURE_NAMES
 
 TEST_PATH = "ml/data/processed/test.csv"
 MODEL_PATH = "ml/models/layer1_v1.joblib"
 
 
 def evaluate(model_path: str = MODEL_PATH, test_path: str = TEST_PATH) -> dict:
-    model = joblib.load(model_path)
+    loaded = joblib.load(model_path)
+    if isinstance(loaded, dict) and "model" in loaded:
+        model = loaded["model"]
+        feature_names = loaded["feature_names"]
+    else:
+        model = loaded
+        from ml.features.extract import STRUCTURAL_FEATURE_NAMES
+        feature_names = STRUCTURAL_FEATURE_NAMES
+
     df = pd.read_csv(test_path)
-    X = df[FEATURE_NAMES]
+    X = df[feature_names]
     y_true = df["label"]
 
     y_pred = model.predict(X)
