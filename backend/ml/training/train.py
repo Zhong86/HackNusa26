@@ -61,7 +61,7 @@ def train(
     model.fit(X, y)
 
     os.makedirs(os.path.dirname(model_out), exist_ok=True)
-    joblib.dump(model, model_out)
+    joblib.dump({"model": model, "feature_names": FEATURE_NAMES}, model_out)
     print(f"model saved to {model_out}")
     return model
 
