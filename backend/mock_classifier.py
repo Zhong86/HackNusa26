@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 
-from app.schemas import EmailPayload, Layer1Score
+from schemas import EmailPayload, Layer1Score
 
 SUSPICIOUS_KEYWORDS = [
     "suspended",

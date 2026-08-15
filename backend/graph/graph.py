@@ -25,7 +25,7 @@ from __future__ import annotations
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from app.graph.nodes import (
+from .nodes import (
     auto_decide_node,
     direct_decision_node,
     finalize_after_human_node,
@@ -36,7 +36,7 @@ from app.graph.nodes import (
     route_after_score,
     score_node,
 )
-from app.graph.state import GraphState
+from .state import GraphState
 
 
 def build_graph():

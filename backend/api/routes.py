@@ -15,8 +15,8 @@ from fastapi import APIRouter, HTTPException
 from langgraph.types import Command
 from pydantic import BaseModel
 
-from app.graph.build import sentinel_graph
-from app.schemas import EmailPayload, Verdict
+from graph.graph import sentinel_graph
+from schemas import EmailPayload, Verdict
 
 router = APIRouter()
 

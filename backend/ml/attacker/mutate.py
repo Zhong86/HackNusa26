@@ -3,9 +3,9 @@ Attacker AI: rewrites known phishing emails to evade Layer 1 while
 keeping malicious intent. Uses an LLM to strip obvious red-flag phrasing.
 """
 import os
-from anthropic import Anthropic
+from groq import Groq
 
-client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
 MUTATION_PROMPT = """You are helping test a phishing detection system's robustness (authorized red-team exercise).
 Rewrite the following phishing email so it sounds more natural and professional, \
@@ -24,12 +24,12 @@ def mutate_email(email: dict) -> dict:
         subject=email.get("subject", ""),
         body=email.get("body", ""),
     )
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
         max_tokens=500,
         messages=[{"role": "user", "content": prompt}],
     )
-    mutated_body = response.content[0].text
+    mutated_body = response.choices[0].message.content
 
     mutated = dict(email)
     mutated["body"] = mutated_body

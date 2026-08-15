@@ -2,6 +2,8 @@
 Train the Layer 1 classifier (XGBoost) with class imbalance handling.
 Saves the fitted model to ml/models/layer1_v1.joblib.
 """
+import os
+
 import pandas as pd
 import joblib
 from xgboost import XGBClassifier
@@ -29,6 +31,7 @@ def train(train_path: str = TRAIN_PATH, model_out: str = MODEL_OUT, use_smote: b
     )
     model.fit(X, y)
 
+    os.makedirs(os.path.dirname(model_out), exist_ok=True)
     joblib.dump(model, model_out)
     print(f"model saved to {model_out}")
     return model

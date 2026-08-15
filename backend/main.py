@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.api.routes import router
+from api.routes import router
 
 app = FastAPI(title="Sentinel Loop — Layer 2 Agent", version="0.1.0")
 app.include_router(router)

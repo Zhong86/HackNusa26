@@ -1,5 +1,13 @@
 .venv
 __pycache__/
-backend/ml/data/
 .DS_Store
 .DS_Store?
+.env
+!backend/ml/data/raw/
+backend/ml/data/raw/*
+!backend/ml/data/raw/.gitkeep
+backend/ml/data/processed/*
+!backend/ml/data/processed/.gitkeep
+!backend/ml/models/
+backend/ml/models/*
+!backend/ml/models/.gitkeep

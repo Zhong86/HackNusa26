@@ -11,10 +11,10 @@ from __future__ import annotations
 
 from langgraph.types import interrupt
 
-from app.graph.state import GraphState
-from app.mock_classifier import score_email
-from app.schemas import ContextBundle, ReasoningResult, Verdict
-from app.tools.context_tools import lookup_domain_age, lookup_sender_history, lookup_threat_intel
+from .state import GraphState
+from mock_classifier import score_email
+from schemas import ContextBundle, ReasoningResult, Verdict
+from tools.context_tools import lookup_domain_age, lookup_sender_history, lookup_threat_intel
 
 # Below this, Layer 1 is confident enough to decide alone.
 # Between the two thresholds is the "uncertain zone" that escalates to Layer 2.
@@ -114,7 +114,6 @@ def reason_node(state: GraphState) -> dict:
     else:
         decision = Verdict.ALLOW
 
-    confidence = round(1.0 - abs(combined - round(combined)), 2)
     # crude confidence proxy: how far from the decision boundary we landed
     confidence = round(min(1.0, abs(combined - 0.475) / 0.475 + 0.3), 2)
 

@@ -20,6 +20,12 @@ def score_email(email: dict) -> Layer1Score:
     """
     email: {sender, display_name, subject, body, urls}
     """
+    # extract_features()/_url_features() expects a has_url_flag (0/1), matching
+    # training-time preprocessing — derive it from the live urls list here so
+    # serving and training compute the same feature the same way.
+    email = dict(email)
+    email["has_url_flag"] = int(bool(email.get("urls")))
+
     features = extract_features(email)
     ordered = [features[name] for name in FEATURE_NAMES]
     proba = _model.predict_proba([ordered])[0][1]

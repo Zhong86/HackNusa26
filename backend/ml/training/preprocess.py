@@ -25,13 +25,25 @@ def load_raw() -> pd.DataFrame:
     df = pd.read_csv(RAW_PATH)
     df = df.dropna(subset=["label"])
 
-    for col in ["sender", "display_name", "subject", "body"]:
+    # CEAS_08 columns: sender, receiver, date, subject, body, label, urls
+    # "sender" here is the raw "Display Name <email@domain>" or bare email string —
+    # display_name isn't a separate column in this dataset, so we derive both from it.
+    for col in ["sender", "subject", "body"]:
         if col in df.columns:
             df[col] = df[col].fillna("")
 
-    df["urls"] = df["urls"].fillna("").apply(
-        lambda s: [u.strip() for u in s.split(",") if u.strip()]
-    )
+    display_names, emails = [], []
+    for raw in df["sender"]:
+        name, addr = _split_sender(raw)
+        display_names.append(name)
+        emails.append(addr)
+    df["display_name"] = display_names
+    df["sender_email"] = emails
+
+    # CEAS_08's "urls" column is a 0/1 flag (email contains a URL), not a list of links —
+    # extract_features' _url_features() just wants that flag, so pass it straight through.
+    df["has_url_flag"] = df["urls"].fillna(0).astype(int) if "urls" in df.columns else 0
+
     return df
 
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timedelta, timezone
 
-from app.schemas import EmailPayload
+from schemas import EmailPayload
 
 
 def _seeded_hash(value: str) -> int:

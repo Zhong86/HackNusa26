@@ -2,9 +2,9 @@ fastapi>=0.115
 uvicorn[standard]>=0.32
 langgraph>=0.2.60
 pydantic>=2.9
+groq>=0.11
 pandas
 scikit-learn
 xgboost
 imbalanced-learn
 joblib
-anthropic

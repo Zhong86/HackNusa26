@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Optional, TypedDict
 
-from app.schemas import ContextBundle, EmailPayload, Layer1Score, ReasoningResult, Verdict
+from schemas import ContextBundle, EmailPayload, Layer1Score, ReasoningResult, Verdict
 
 
 class GraphState(TypedDict, total=False):
