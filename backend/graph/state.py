@@ -4,10 +4,11 @@ Graph state for the Sentinel Loop Layer 2 reasoning agent.
 Flow:
     score_email (mocked Layer 1)
         -> uncertain? (conditional edge)
-            -> No:  route_direct   -> END
-            -> Yes: gather_context -> reason -> confidence_check
-                -> low:  interrupt (human-in-the-loop) -> apply_human_decision -> END
-                -> high: decide -> END
+            -> No:  direct_decision -> END
+            -> Yes: gather_context -> reason -> auto_decide -> END
+
+No human-in-the-loop: this is a detection research system (not deployed in
+front of real users), so Layer 2's reasoning always auto-decides.
 
 Every node returns a partial dict that gets merged into this TypedDict,
 which is the standard LangGraph state-update pattern.
@@ -15,7 +16,7 @@ which is the standard LangGraph state-update pattern.
 
 from __future__ import annotations
 
-from typing import Optional, TypedDict
+from typing import TypedDict
 
 from schemas import ContextBundle, EmailPayload, Layer1Score, ReasoningResult, Verdict
 
@@ -35,11 +36,6 @@ class GraphState(TypedDict, total=False):
 
     # --- Layer 2 reasoning ---
     reasoning: ReasoningResult
-
-    # --- human-in-the-loop ---
-    needs_human_review: bool
-    human_decision: Optional[Verdict]
-    human_note: Optional[str]
 
     # --- final output ---
     final_verdict: Verdict

@@ -5,14 +5,17 @@ Each node takes the current GraphState and returns a partial dict to
 merge in — standard LangGraph convention. Keeping nodes as plain
 functions (no framework-specific decorators beyond what's needed)
 makes them easy to unit test in isolation.
+
+No human-in-the-loop: this is a detection research system, not something
+sitting in front of real users' inboxes, so Layer 2's reasoning always
+auto-decides. There's nothing to interrupt for — we just want to see what
+the system outputs.
 """
 
 from __future__ import annotations
 
-from langgraph.types import interrupt
-
 from .state import GraphState
-from mock_classifier import score_email
+from ml.serving.classifier import score_email
 from schemas import ContextBundle, ReasoningResult, Verdict
 from tools.context_tools import lookup_domain_age, lookup_sender_history, lookup_threat_intel
 
@@ -20,16 +23,15 @@ from tools.context_tools import lookup_domain_age, lookup_sender_history, lookup
 # Between the two thresholds is the "uncertain zone" that escalates to Layer 2.
 LOW_THRESHOLD = 0.2
 HIGH_THRESHOLD = 0.75
-
-# Below this, Layer 2's own reasoning confidence is too low to auto-decide,
-# so it escalates to a human via interrupt().
-HUMAN_REVIEW_THRESHOLD = 0.6
-
+from logger import get_logger
+log = get_logger(__name__)
 
 def score_node(state: GraphState) -> dict:
     """Layer 1: run the (mocked) classifier."""
     result = score_email(state["email"])
     trace = state.get("trace", [])
+
+    log.info("Layer 1 score_node: email=%s score=%.2f", state["email"].sender, result.score)
     return {
         "layer1_score": result,
         "trace": trace + ["score_node"],
@@ -136,63 +138,11 @@ def reason_node(state: GraphState) -> dict:
     }
 
 
-def route_after_reason(state: GraphState) -> str:
-    """Conditional edge: is Layer 2's own confidence high enough to auto-decide?"""
-    if state["reasoning"].confidence < HUMAN_REVIEW_THRESHOLD:
-        return "needs_human"
-    return "auto_decide"
-
-
-def human_review_node(state: GraphState) -> dict:
-    """
-    Pause the graph and wait for a human analyst's call.
-    interrupt() surfaces the payload to whatever is driving the graph
-    (API layer / CLI / future dashboard) and blocks until resumed
-    with a Command(resume=...).
-    """
-    reasoning = state["reasoning"]
-    payload = {
-        "reason": "low_confidence_reasoning",
-        "email_subject": state["email"].subject,
-        "sender": state["email"].sender,
-        "layer1_score": state["layer1_score"].score,
-        "agent_decision": reasoning.decision.value,
-        "agent_confidence": reasoning.confidence,
-        "agent_justification": reasoning.justification,
-        "evidence_used": reasoning.evidence_used,
-    }
-    human_response = interrupt(payload)
-
-    # human_response is expected to look like: {"decision": "quarantine", "note": "..."}
-    trace = state.get("trace", [])
-    return {
-        "needs_human_review": True,
-        "human_decision": Verdict(human_response["decision"]),
-        "human_note": human_response.get("note"),
-        "trace": trace + ["human_review_node"],
-    }
-
-
-def finalize_after_human_node(state: GraphState) -> dict:
-    """Apply the human's decision as the final verdict."""
-    trace = state.get("trace", [])
-    return {
-        "final_verdict": state["human_decision"],
-        "final_justification": (
-            f"Human analyst override: {state.get('human_note') or 'no note provided'}. "
-            f"(Agent had proposed {state['reasoning'].decision.value} "
-            f"at confidence {state['reasoning'].confidence:.2f}.)"
-        ),
-        "trace": trace + ["finalize_after_human_node"],
-    }
-
-
 def auto_decide_node(state: GraphState) -> dict:
-    """Layer 2 was confident enough — its decision stands without human review."""
+    """Layer 2's decision is final — no human-in-the-loop, just report the output."""
     reasoning = state["reasoning"]
     trace = state.get("trace", [])
     return {
-        "needs_human_review": False,
         "final_verdict": reasoning.decision,
         "final_justification": reasoning.justification,
         "trace": trace + ["auto_decide_node"],

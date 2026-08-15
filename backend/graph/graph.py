@@ -7,20 +7,31 @@ Assembles the Sentinel Loop Layer 2 graph.
       |
    route_after_score
       |-- confident --> direct_decision_node --> END
-      |-- uncertain --> gather_context_node --> reason_node
-                                                    |
-                                              route_after_reason
-                                                    |-- auto_decide --> auto_decide_node --> END
-                                                    |-- needs_human --> human_review_node
-                                                                            |
-                                                                    finalize_after_human_node --> END
+      |-- uncertain --> gather_context_node --> reason_node --> auto_decide_node --> END
 
-A checkpointer is required for interrupt()/resume to work — MemorySaver
-is fine for local dev; swap for a persistent checkpointer (e.g. Postgres)
-before this needs to survive process restarts.
+No human-in-the-loop: this is a detection research system (not deployed in
+front of real users), so Layer 2's reasoning always auto-decides — we just
+want to observe what the system outputs.
+
+A checkpointer is kept around for future use / trace inspection via
+sentinel_graph.get_state(); MemorySaver is fine for local dev, swap for a
+persistent checkpointer (e.g. Postgres) before this needs to survive
+process restarts. Strict msgpack deserialization is enabled (see
+CVE-2026-28277) — required regardless of backing store, since it protects
+against a compromised/tampered checkpoint store, not just remote ones.
 """
 
 from __future__ import annotations
+
+import os
+
+# Opt into strict msgpack checkpoint deserialization (see CVE-2026-28277).
+# With this set, LangGraph derives the allowlist itself from GraphState's
+# schema at compile time (covers EmailPayload, Layer1Score, ContextBundle,
+# ReasoningResult, Verdict) instead of silently allowing any type with a
+# deprecation warning. Set before importing the checkpoint module so it
+# takes effect. Respect an existing value if the process already set one.
+os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -28,11 +39,8 @@ from langgraph.graph import END, START, StateGraph
 from .nodes import (
     auto_decide_node,
     direct_decision_node,
-    finalize_after_human_node,
     gather_context_node,
-    human_review_node,
     reason_node,
-    route_after_reason,
     route_after_score,
     score_node,
 )
@@ -47,8 +55,6 @@ def build_graph():
     graph.add_node("gather_context", gather_context_node)
     graph.add_node("reason", reason_node)
     graph.add_node("auto_decide", auto_decide_node)
-    graph.add_node("human_review", human_review_node)
-    graph.add_node("finalize_after_human", finalize_after_human_node)
 
     graph.add_edge(START, "score")
 
@@ -63,19 +69,8 @@ def build_graph():
     graph.add_edge("direct_decision", END)
 
     graph.add_edge("gather_context", "reason")
-
-    graph.add_conditional_edges(
-        "reason",
-        route_after_reason,
-        {
-            "auto_decide": "auto_decide",
-            "needs_human": "human_review",
-        },
-    )
+    graph.add_edge("reason", "auto_decide")
     graph.add_edge("auto_decide", END)
-
-    graph.add_edge("human_review", "finalize_after_human")
-    graph.add_edge("finalize_after_human", END)
 
     checkpointer = MemorySaver()
     return graph.compile(checkpointer=checkpointer)

@@ -1,39 +1,40 @@
 """
 The one function Person B's backend depends on.
-score_email(email) -> object matching backend/schemas.py::Layer1Score
+score_email(email) -> schemas.Layer1Score (the same Layer1Score used
+everywhere else in the app — no separate serving-only type).
 """
-from dataclasses import dataclass, asdict
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Union
+
+from schemas import EmailPayload, Layer1Score
 from ml.features.extract import extract_features, FEATURE_NAMES
 from ml.serving.model_store import load_model
 
-MODEL_PATH = "ml/models/layer1_v1.joblib"
-_model = load_model(MODEL_PATH)
+MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "layer1_v1.joblib"
+
+_model = None
 
 
-@dataclass
-class Layer1Score:
-    score: float   # calibrated probability of phishing, 0.0-1.0
-    features: dict
+def _get_model():
+    global _model
+    if _model is None:
+        _model = load_model(str(MODEL_PATH))
+    return _model
 
 
-def score_email(email: dict) -> Layer1Score:
-    """
-    email: {sender, display_name, subject, body, urls}
-    """
-    # extract_features()/_url_features() expects a has_url_flag (0/1), matching
-    # training-time preprocessing — derive it from the live urls list here so
-    # serving and training compute the same feature the same way.
-    email = dict(email)
-    email["has_url_flag"] = int(bool(email.get("urls")))
+def score_email(email: Union[EmailPayload, dict]) -> Layer1Score:
+    email_dict = email.model_dump() if isinstance(email, EmailPayload) else dict(email)
+    email_dict["has_url_flag"] = int(bool(email_dict.get("urls")))
 
-    features = extract_features(email)
+    features = extract_features(email_dict)
     ordered = [features[name] for name in FEATURE_NAMES]
-    proba = _model.predict_proba([ordered])[0][1]
+    proba = _get_model().predict_proba([ordered])[0][1]
     return Layer1Score(score=float(proba), features=features)
 
 
 if __name__ == "__main__":
-    # quick manual smoke test
     sample = {
         "sender": "support@paypa1-secure.com",
         "display_name": "PayPal Support",
@@ -41,5 +42,4 @@ if __name__ == "__main__":
         "body": "Dear user, we detected unusual activity...",
         "urls": ["http://paypa1-secure.com/verify-now"],
     }
-    result = score_email(sample)
-    print(asdict(result))
+    print(score_email(sample).model_dump())
