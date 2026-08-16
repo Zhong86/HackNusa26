@@ -13,3 +13,4 @@ backend/ml/models/*
 !backend/ml/models/.gitkeep
 !backend/ml/models/layer1_v1.joblib
 !backend/ml/models/embedding_centroids.joblib
+node_modules/

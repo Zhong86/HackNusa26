@@ -44,7 +44,7 @@ BENIGN_CACHE = CACHE_DIR / "benign_vecs.joblib"
 # per embedding call (sequential, local Ollama), 1500/class can take 25-60+
 # minutes; 300-500/class is usually enough for a stable centroid and finishes
 # in a few minutes.
-MAX_PER_CLASS = 700
+MAX_PER_CLASS = 1200
 
 
 def _load_cache(path: Path) -> dict[int, list[float]]:

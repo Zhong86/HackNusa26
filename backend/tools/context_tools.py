@@ -18,7 +18,18 @@ from __future__ import annotations
 from db import get_sender_history
 from schemas import EmailPayload
 
+# Kalo pake DB
+# def lookup_sender_history(email: EmailPayload) -> dict:
+#     """Real lookup: has this sender been seen before, based on actual recorded traffic?"""
+#     return get_sender_history(email.sender)
 
 def lookup_sender_history(email: EmailPayload) -> dict:
-    """Real lookup: has this sender been seen before, based on actual recorded traffic?"""
-    return get_sender_history(email.sender)
+    """No persistence — always reports the sender as unseen."""
+    return {
+        "sender": email.sender,
+        "seen_before": False,
+        "first_seen_days_ago": None,
+        "prior_flag_count": 0,
+    }
+ 
+

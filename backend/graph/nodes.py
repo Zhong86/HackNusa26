@@ -58,7 +58,9 @@ def direct_decision_node(state: GraphState) -> dict:
         f"[{LOW_THRESHOLD}, {HIGH_THRESHOLD}] — decided without escalating to Layer 2."
     )
     trace = state.get("trace", [])
-    record_sender_event(state["email"].sender, verdict.value)
+
+    # use for DB
+    # record_sender_event(state["email"].sender, verdict.value)
     return {
         "final_verdict": verdict,
         "final_justification": justification,
@@ -68,6 +70,7 @@ def direct_decision_node(state: GraphState) -> dict:
 
 def gather_context_node(state: GraphState) -> dict:
     """Layer 2: pull sender history (real, from local DB — offline)."""
+    return {}
     email = state["email"]
     context = ContextBundle(
         sender_history=lookup_sender_history(email),
@@ -80,51 +83,52 @@ def gather_context_node(state: GraphState) -> dict:
 
 
 REASON_SYSTEM_PROMPT = (
-    "Kamu adalah analis SOC (Security Operations Center) yang menilai apakah "
-    "sebuah email adalah phishing, berdasarkan skor Layer 1 dan riwayat sender. "
-    "Kamu TIDAK punya data umur domain atau threat-intel eksternal — nilai hanya "
-    "dari isi email, skor Layer 1, dan riwayat sender ini. "
-    "decision harus salah satu dari: allow, quarantine, escalate. "
-    "confidence adalah angka 0.0-1.0. mitre_technique_ids diisi dengan ID teknik MITRE ATT&CK yang relevan."
+    "You are an expert SOC (Security Operations Center) analyst assessing whether "
+    "an email is phishing.\n\n"
+    "Carefully analyze the email payload alongside Layer 1's preliminary score. "
+    "Use your domain knowledge to evaluate:\n"
+    "1. Identity & Domain Alignment: Brand spoofing, lookalike domains (typosquatting), or sender vs display name mismatches.\n"
+    "2. Link Analysis: Deceptive URLs, suspicious domains/TLDs, or target link discrepancies.\n"
+    "3. Social Engineering: High-urgency language, threats, coercion, or unusual requests.\n\n"
+    "Rules:\n"
+    "- decision must be one of: allow, quarantine, escalate.\n"
+    "- confidence must be a float between 0.0 and 1.0.\n"
+    "- mitre_technique_ids should contain relevant MITRE ATT&CK IDs (e.g., T1566.002 for Spearphishing Link)."
 )
 
 REASON_SCHEMA = {
     "decision": "allow | quarantine | escalate",
     "confidence": "float 0.0-1.0",
-    "justification": "string, alasan singkat seperti catatan tiket SOC",
+    "justification": "string, concise SOC analysis summary explaining key indicators",
     "evidence_used": ["string"],
     "mitre_technique_ids": ["string"],
 }
 
-
 def reason_node(state: GraphState) -> dict:
-    """Layer 2: reasoning agent — memanggil LLM (OpenAI-compatible) untuk keputusan akhir."""
+    """Layer 2: reasoning agent — passes raw email payload and Layer 1 score directly to LLM."""
     email = state["email"]
-    ctx = state["context"]
     score = state["layer1_score"].score
 
     user_prompt = (
-        f"Layer 1 score (probabilitas phishing): {score:.2f}\n\n"
-        f"Email:\n"
-        f"- Sender: {email.sender}\n"
-        f"- Display name: {email.display_name}\n"
+        f"Layer 1 Score (Phishing Probability): {score:.2f}\n\n"
+        f"Email Payload:\n"
+        f"- Sender Address: {email.sender}\n"
+        f"- Display Name: {email.display_name}\n"
         f"- Subject: {email.subject}\n"
         f"- Body: {email.body}\n"
-        f"- URLs: {email.urls}\n\n"
-        f"Konteks tambahan:\n"
-        f"- Sender history: {ctx.sender_history}\n"
+        f"- Extracted URLs: {email.urls}\n"
     )
 
     try:
         raw = call_structured(REASON_SYSTEM_PROMPT, user_prompt, REASON_SCHEMA)
         result = ReasoningResult.model_validate(raw)
     except (LLMCallError, ValidationError) as e:
-        log.warning("Layer 2 reason_node: LLM gagal (%s), fallback ke escalate manual", e)
+        log.warning("Layer 2 reason_node: LLM failed (%s), defaulting to safety escalation", e)
         result = ReasoningResult(
             decision=Verdict.ESCALATE,
             confidence=0.0,
-            justification=f"LLM reasoning gagal ({e}); email di-escalate otomatis untuk review manual.",
-            evidence_used=["LLM call failed — fallback safety net"],
+            justification=f"LLM execution failure ({e}); automatically escalated for human review.",
+            evidence_used=["LLM execution failure — fallback safety net"],
             mitre_technique_ids=["T1566"],
         )
 
@@ -136,12 +140,12 @@ def reason_node(state: GraphState) -> dict:
         "trace": trace + ["reason_node"],
     }
 
-
 def auto_decide_node(state: GraphState) -> dict:
     """Layer 2's decision is final — no human-in-the-loop, just report the output."""
     reasoning = state["reasoning"]
     trace = state.get("trace", [])
-    record_sender_event(state["email"].sender, reasoning.decision.value)
+    # use for DB
+    # record_sender_event(state["email"].sender, reasoning.decision.value)
     return {
         "final_verdict": reasoning.decision,
         "final_justification": reasoning.justification,

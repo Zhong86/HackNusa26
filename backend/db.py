@@ -33,6 +33,7 @@ def _connect():
 
 def init_db() -> None:
     """Buat tabel kalau belum ada. Dipanggil sekali saat app startup."""
+    return
     with _connect() as conn:
         conn.execute(
             """
