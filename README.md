@@ -20,7 +20,7 @@
     "sender": "maria.santos@university.edu",
     "display_name": "Maria Santos",
     "subject": "Quick question about the recommendation letter",
-    "body": "Hi Professor, just checking in on the recommendation letter timeline whenever you have a moment. No rush at all.",
+    "body": "Hi Professor, just checking in on the recommendation letter timeline whenever you have a moment. No rush at all. But pls dont take too long though, I would need it by the end of July",
     "urls": []
   }
 }
