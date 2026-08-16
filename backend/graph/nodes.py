@@ -14,10 +14,11 @@ the system outputs.
 
 from __future__ import annotations
 
+from db import record_sender_event
 from .state import GraphState
 from ml.serving.classifier import score_email
 from schemas import ContextBundle, ReasoningResult, Verdict
-from tools.context_tools import lookup_domain_age, lookup_sender_history, lookup_threat_intel
+from tools.context_tools import lookup_sender_history
 from llm.client import call_structured, LLMCallError
 from pydantic import ValidationError
 
@@ -57,6 +58,7 @@ def direct_decision_node(state: GraphState) -> dict:
         f"[{LOW_THRESHOLD}, {HIGH_THRESHOLD}] — decided without escalating to Layer 2."
     )
     trace = state.get("trace", [])
+    record_sender_event(state["email"].sender, verdict.value)
     return {
         "final_verdict": verdict,
         "final_justification": justification,
@@ -65,12 +67,10 @@ def direct_decision_node(state: GraphState) -> dict:
 
 
 def gather_context_node(state: GraphState) -> dict:
-    """Layer 2: pull sender history, domain age, and threat-intel stubs."""
+    """Layer 2: pull sender history (real, from local DB — offline)."""
     email = state["email"]
     context = ContextBundle(
         sender_history=lookup_sender_history(email),
-        domain_age=lookup_domain_age(email),
-        threat_intel=lookup_threat_intel(email),
     )
     trace = state.get("trace", [])
     return {
@@ -81,7 +81,9 @@ def gather_context_node(state: GraphState) -> dict:
 
 REASON_SYSTEM_PROMPT = (
     "Kamu adalah analis SOC (Security Operations Center) yang menilai apakah "
-    "sebuah email adalah phishing, berdasarkan skor Layer 1 dan konteks tambahan. "
+    "sebuah email adalah phishing, berdasarkan skor Layer 1 dan riwayat sender. "
+    "Kamu TIDAK punya data umur domain atau threat-intel eksternal — nilai hanya "
+    "dari isi email, skor Layer 1, dan riwayat sender ini. "
     "decision harus salah satu dari: allow, quarantine, escalate. "
     "confidence adalah angka 0.0-1.0. mitre_technique_ids diisi dengan ID teknik MITRE ATT&CK yang relevan."
 )
@@ -111,8 +113,6 @@ def reason_node(state: GraphState) -> dict:
         f"- URLs: {email.urls}\n\n"
         f"Konteks tambahan:\n"
         f"- Sender history: {ctx.sender_history}\n"
-        f"- Domain age: {ctx.domain_age}\n"
-        f"- Threat intel: {ctx.threat_intel}\n"
     )
 
     try:
@@ -141,6 +141,7 @@ def auto_decide_node(state: GraphState) -> dict:
     """Layer 2's decision is final — no human-in-the-loop, just report the output."""
     reasoning = state["reasoning"]
     trace = state.get("trace", [])
+    record_sender_event(state["email"].sender, reasoning.decision.value)
     return {
         "final_verdict": reasoning.decision,
         "final_justification": reasoning.justification,

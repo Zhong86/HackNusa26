@@ -38,11 +38,11 @@ class Verdict(str, Enum):
 
 
 class ContextBundle(BaseModel):
-    """Gathered by Layer 2's context tools before reasoning."""
+    """Gathered by Layer 2's context tools before reasoning. Sender history is
+    real (from local DB). domain_age/threat_intel were removed — see
+    tools/context_tools.py for why."""
 
     sender_history: dict = Field(default_factory=dict)
-    domain_age: dict = Field(default_factory=dict)
-    threat_intel: dict = Field(default_factory=dict)
 
 
 class ReasoningResult(BaseModel):
