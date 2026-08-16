@@ -18,7 +18,8 @@ from .state import GraphState
 from ml.serving.classifier import score_email
 from schemas import ContextBundle, ReasoningResult, Verdict
 from tools.context_tools import lookup_domain_age, lookup_sender_history, lookup_threat_intel
-from llm.client import call_structured
+from llm.client import call_structured, LLMCallError
+from pydantic import ValidationError
 
 # Below this, Layer 1 is confident enough to decide alone.
 # Between the two thresholds is the "uncertain zone" that escalates to Layer 2.
@@ -114,8 +115,18 @@ def reason_node(state: GraphState) -> dict:
         f"- Threat intel: {ctx.threat_intel}\n"
     )
 
-    raw = call_structured(REASON_SYSTEM_PROMPT, user_prompt, REASON_SCHEMA)
-    result = ReasoningResult.model_validate(raw)
+    try:
+        raw = call_structured(REASON_SYSTEM_PROMPT, user_prompt, REASON_SCHEMA)
+        result = ReasoningResult.model_validate(raw)
+    except (LLMCallError, ValidationError) as e:
+        log.warning("Layer 2 reason_node: LLM gagal (%s), fallback ke escalate manual", e)
+        result = ReasoningResult(
+            decision=Verdict.ESCALATE,
+            confidence=0.0,
+            justification=f"LLM reasoning gagal ({e}); email di-escalate otomatis untuk review manual.",
+            evidence_used=["LLM call failed — fallback safety net"],
+            mitre_technique_ids=["T1566"],
+        )
 
     log.info("Layer 2 reason_node: decision=%s confidence=%.2f", result.decision, result.confidence)
 
