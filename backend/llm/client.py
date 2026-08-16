@@ -1,7 +1,8 @@
 """
-Client LLM untuk provider yang kompatibel dengan format OpenAI API
+Client LLM generik untuk provider yang kompatibel dengan format OpenAI API
+(base_url + api_key bisa diarahkan ke provider mana saja, bukan cuma OpenAI).
 
-Konfigurasi lewat environment (.env) variable:
+Konfigurasi lewat environment variable:
     LLM_BASE_URL   - contoh: https://api.groq.com/openai/v1
     LLM_API_KEY    - API key provider
     LLM_MODEL      - nama model, contoh: llama-3.3-70b-versatile
