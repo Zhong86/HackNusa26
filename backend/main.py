@@ -1,3 +1,7 @@
+from dotenv import load_dotenv
+
+load_dotenv()  # baca .env sebelum modul lain (llm, embeddings) membaca env var
+
 from fastapi import FastAPI
 
 from api.routes import router
