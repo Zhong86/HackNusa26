@@ -14,10 +14,13 @@ the system outputs.
 
 from __future__ import annotations
 
+from db import record_sender_event
 from .state import GraphState
 from ml.serving.classifier import score_email
 from schemas import ContextBundle, ReasoningResult, Verdict
-from tools.context_tools import lookup_domain_age, lookup_sender_history, lookup_threat_intel
+from tools.context_tools import lookup_sender_history
+from llm.client import call_structured, LLMCallError
+from pydantic import ValidationError
 
 # Below this, Layer 1 is confident enough to decide alone.
 # Between the two thresholds is the "uncertain zone" that escalates to Layer 2.
@@ -55,6 +58,7 @@ def direct_decision_node(state: GraphState) -> dict:
         f"[{LOW_THRESHOLD}, {HIGH_THRESHOLD}] — decided without escalating to Layer 2."
     )
     trace = state.get("trace", [])
+    record_sender_event(state["email"].sender, verdict.value)
     return {
         "final_verdict": verdict,
         "final_justification": justification,
@@ -63,12 +67,10 @@ def direct_decision_node(state: GraphState) -> dict:
 
 
 def gather_context_node(state: GraphState) -> dict:
-    """Layer 2: pull sender history, domain age, and threat-intel stubs."""
+    """Layer 2: pull sender history (real, from local DB — offline)."""
     email = state["email"]
     context = ContextBundle(
         sender_history=lookup_sender_history(email),
-        domain_age=lookup_domain_age(email),
-        threat_intel=lookup_threat_intel(email),
     )
     trace = state.get("trace", [])
     return {
@@ -77,59 +79,56 @@ def gather_context_node(state: GraphState) -> dict:
     }
 
 
+REASON_SYSTEM_PROMPT = (
+    "Kamu adalah analis SOC (Security Operations Center) yang menilai apakah "
+    "sebuah email adalah phishing, berdasarkan skor Layer 1 dan riwayat sender. "
+    "Kamu TIDAK punya data umur domain atau threat-intel eksternal — nilai hanya "
+    "dari isi email, skor Layer 1, dan riwayat sender ini. "
+    "decision harus salah satu dari: allow, quarantine, escalate. "
+    "confidence adalah angka 0.0-1.0. mitre_technique_ids diisi dengan ID teknik MITRE ATT&CK yang relevan."
+)
+
+REASON_SCHEMA = {
+    "decision": "allow | quarantine | escalate",
+    "confidence": "float 0.0-1.0",
+    "justification": "string, alasan singkat seperti catatan tiket SOC",
+    "evidence_used": ["string"],
+    "mitre_technique_ids": ["string"],
+}
+
+
 def reason_node(state: GraphState) -> dict:
-    """
-    Layer 2: reasoning agent. Placeholder rule-based logic for now —
-    swap the body for an LLM call (structured output = ReasoningResult)
-    once you're ready to wire in real reasoning.
-    """
+    """Layer 2: reasoning agent — memanggil LLM (OpenAI-compatible) untuk keputusan akhir."""
     email = state["email"]
     ctx = state["context"]
     score = state["layer1_score"].score
 
-    evidence: list[str] = []
-    risk_points = 0.0
-
-    if ctx.threat_intel.get("domain_flagged"):
-        risk_points += 0.4
-        evidence.append("Sender domain matched known threat-intel feed")
-    if ctx.threat_intel.get("matched_malicious_urls"):
-        risk_points += 0.25
-        evidence.append("One or more URLs matched known-malicious list")
-    if ctx.domain_age.get("newly_registered"):
-        risk_points += 0.2
-        evidence.append("Sending domain registered under 30 days ago")
-    if not ctx.sender_history.get("seen_before"):
-        risk_points += 0.1
-        evidence.append("No prior history for this sender")
-    elif ctx.sender_history.get("prior_flag_count", 0) > 0:
-        risk_points += 0.15
-        evidence.append(f"Sender has {ctx.sender_history['prior_flag_count']} prior flags")
-
-    # blend with the Layer 1 score that put us here in the first place
-    combined = min(1.0, (risk_points * 0.7) + (score * 0.3))
-
-    if combined > 0.6:
-        decision = Verdict.QUARANTINE
-    elif combined > 0.35:
-        decision = Verdict.ESCALATE
-    else:
-        decision = Verdict.ALLOW
-
-    # crude confidence proxy: how far from the decision boundary we landed
-    confidence = round(min(1.0, abs(combined - 0.475) / 0.475 + 0.3), 2)
-
-    result = ReasoningResult(
-        decision=decision,
-        confidence=confidence,
-        justification=(
-            f"Layer 1 flagged this as borderline (score={score:.2f}). "
-            f"Layer 2 context review found: {'; '.join(evidence) if evidence else 'no additional risk signals'}. "
-            f"Combined risk={combined:.2f} -> {decision.value}."
-        ),
-        evidence_used=evidence,
-        mitre_technique_ids=["T1566.001"] if ctx.threat_intel.get("domain_flagged") else ["T1566"],
+    user_prompt = (
+        f"Layer 1 score (probabilitas phishing): {score:.2f}\n\n"
+        f"Email:\n"
+        f"- Sender: {email.sender}\n"
+        f"- Display name: {email.display_name}\n"
+        f"- Subject: {email.subject}\n"
+        f"- Body: {email.body}\n"
+        f"- URLs: {email.urls}\n\n"
+        f"Konteks tambahan:\n"
+        f"- Sender history: {ctx.sender_history}\n"
     )
+
+    try:
+        raw = call_structured(REASON_SYSTEM_PROMPT, user_prompt, REASON_SCHEMA)
+        result = ReasoningResult.model_validate(raw)
+    except (LLMCallError, ValidationError) as e:
+        log.warning("Layer 2 reason_node: LLM gagal (%s), fallback ke escalate manual", e)
+        result = ReasoningResult(
+            decision=Verdict.ESCALATE,
+            confidence=0.0,
+            justification=f"LLM reasoning gagal ({e}); email di-escalate otomatis untuk review manual.",
+            evidence_used=["LLM call failed — fallback safety net"],
+            mitre_technique_ids=["T1566"],
+        )
+
+    log.info("Layer 2 reason_node: decision=%s confidence=%.2f", result.decision, result.confidence)
 
     trace = state.get("trace", [])
     return {
@@ -142,6 +141,7 @@ def auto_decide_node(state: GraphState) -> dict:
     """Layer 2's decision is final — no human-in-the-loop, just report the output."""
     reasoning = state["reasoning"]
     trace = state.get("trace", [])
+    record_sender_event(state["email"].sender, reasoning.decision.value)
     return {
         "final_verdict": reasoning.decision,
         "final_justification": reasoning.justification,

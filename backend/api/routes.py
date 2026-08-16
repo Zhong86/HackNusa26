@@ -50,7 +50,7 @@ def _serialize_state(thread_id: str) -> dict:
     state = dict(snapshot.values)
 
     # pydantic models in state need explicit serialization
-    for key in ("layer1_score", "context", "reasoning"):
+    for key in ("email", "layer1_score", "context", "reasoning"):
         if key in state and state[key] is not None:
             state[key] = state[key].model_dump()
 
