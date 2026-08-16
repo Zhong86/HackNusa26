@@ -19,6 +19,9 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 import re
 from ml.features.extract import extract_features, FEATURE_NAMES
+from logger import get_logger
+
+log = get_logger(__name__)
 
 RAW_PATH = "ml/data/raw/CEAS_08.csv"   # adjust to your actual Kaggle file
 OUT_TRAIN = "ml/data/processed/train.csv"
@@ -27,6 +30,21 @@ OUT_TEST = "ml/data/processed/test.csv"
 # Optional cap on total raw rows processed. None/0 = use the full dataset.
 # Can also be set via env var SAMPLE_SIZE or the --sample-size CLI flag.
 SAMPLE_SIZE = int(os.environ["SAMPLE_SIZE"]) if os.environ.get("SAMPLE_SIZE") else None
+
+# CEAS_08's "urls" column is just a 0/1 flag (does the body contain a link),
+# not the actual link text — the real URLs live inline in the raw body, e.g.
+# "...Become a lover no woman will be able to resist!\nhttp://whitedone.com/...".
+# We regex them out here so training sees the same real url list[str] shape
+# that classifier.py already gets from EmailPayload.urls at serving time —
+# no train/serve skew, and _url_features() gets real data to work with
+# instead of a single flag bit.
+_URL_RE = re.compile(r'https?://[^\s<>"\')\]]+')
+
+
+def _extract_urls(body: str) -> list[str]:
+    if not isinstance(body, str) or not body:
+        return []
+    return [u.rstrip('.,;:!?') for u in _URL_RE.findall(body)]
 
 
 def _split_sender(raw_sender: str) -> tuple[str, str]:
@@ -76,26 +94,53 @@ def load_raw(sample_size: int | None = None) -> pd.DataFrame:
     df["display_name"] = display_names
     df["sender_email"] = emails
 
-    # CEAS_08's "urls" column is a 0/1 flag (email contains a URL), not a list of links —
-    # extract_features' _url_features() just wants that flag, so pass it straight through.
-    df["has_url_flag"] = df["urls"].fillna(0).astype(int) if "urls" in df.columns else 0
+    # Real URL extraction from body text — see _extract_urls() docstring above.
+    # Stored as a list per row; build_feature_table() passes it straight to
+    # extract_features() as email["urls"].
+    df["extracted_urls"] = df["body"].apply(_extract_urls)
 
     return df
 
 
 def build_feature_table(df: pd.DataFrame) -> pd.DataFrame:
+    total = len(df)
     rows = []
-    for _, row in df.iterrows():
+    n_success = 0
+    n_failed = 0
+
+    log.info("Feature extraction starting: %d rows", total)
+
+    for i, (_, row) in enumerate(df.iterrows(), start=1):
         email = {
             "sender": row.get("sender_email", ""),
             "display_name": row.get("display_name", ""),
             "subject": row.get("subject", ""),
             "body": row.get("body", ""),
-            "has_url_flag": row.get("has_url_flag", 0),
+            "urls": row.get("extracted_urls", []),
         }
-        feats = extract_features(email)
-        feats["label"] = int(row["label"])
-        rows.append(feats)
+        try:
+            feats = extract_features(email)
+            feats["label"] = int(row["label"])
+            rows.append(feats)
+            n_success += 1
+        except Exception:
+            n_failed += 1
+            log.exception(
+                "Feature extraction failed for row %d (sender=%s) — skipping",
+                i, email.get("sender"),
+            )
+            continue
+
+        if i % 50 == 0 or i == total:
+            log.info(
+                "Feature extraction progress: %d/%d done (%d ok, %d failed)",
+                i, total, n_success, n_failed,
+            )
+
+    log.info(
+        "Feature extraction finished: %d/%d succeeded, %d failed",
+        n_success, total, n_failed,
+    )
 
     feat_df = pd.DataFrame(rows)
     return feat_df[FEATURE_NAMES + ["label"]]
@@ -115,7 +160,7 @@ def main():
 
     raw = load_raw(sample_size=sample_size)
     if sample_size:
-        print(f"sampling: using {len(raw)} of the raw rows (sample_size={sample_size})")
+        log.info("Sampling: using %d of the raw rows (sample_size=%d)", len(raw), sample_size)
 
     feat_df = build_feature_table(raw)
 
@@ -132,8 +177,9 @@ def main():
 
     train_df.to_csv(OUT_TRAIN, index=False)
     test_df.to_csv(OUT_TEST, index=False)
-    print(f"train: {len(train_df)} rows, test: {len(test_df)} rows")
-    print(f"train label balance:\n{train_df['label'].value_counts(normalize=True)}")
+    log.info("Saved train.csv: %d rows -> %s", len(train_df), OUT_TRAIN)
+    log.info("Saved test.csv: %d rows -> %s", len(test_df), OUT_TEST)
+    log.info("Train label balance:\n%s", train_df["label"].value_counts(normalize=True))
 
 
 if __name__ == "__main__":

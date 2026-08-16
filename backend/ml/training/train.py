@@ -22,6 +22,9 @@ from sklearn.model_selection import train_test_split
 from xgboost import XGBClassifier
 from imblearn.over_sampling import SMOTE
 from ml.features.extract import FEATURE_NAMES
+from logger import get_logger
+
+log = get_logger(__name__)
 
 TRAIN_PATH = "ml/data/processed/train.csv"
 MODEL_OUT = "ml/models/layer1_v1.joblib"
@@ -37,20 +40,24 @@ def train(
     sample_size: int | None = None,
 ):
     df = pd.read_csv(train_path)
+    log.info("Loaded %d rows from %s", len(df), train_path)
 
     if sample_size and sample_size < len(df):
         df, _ = train_test_split(
             df, train_size=sample_size, random_state=42, stratify=df["label"]
         )
         df = df.reset_index(drop=True)
-        print(f"sampling: training on {len(df)} of the rows in {train_path} (sample_size={sample_size})")
+        log.info("Sampling: training on %d of the rows (sample_size=%d)", len(df), sample_size)
 
     X = df[FEATURE_NAMES]
     y = df["label"]
 
     if use_smote:
+        n_before = len(X)
         X, y = SMOTE(random_state=42).fit_resample(X, y)
+        log.info("SMOTE resampling: %d -> %d rows", n_before, len(X))
 
+    log.info("Fitting XGBClassifier on %d rows, %d features", len(X), len(FEATURE_NAMES))
     model = XGBClassifier(
         n_estimators=300,
         max_depth=5,
@@ -59,10 +66,11 @@ def train(
         random_state=42,
     )
     model.fit(X, y)
+    log.info("Training complete: %d rows fit successfully", len(X))
 
     os.makedirs(os.path.dirname(model_out), exist_ok=True)
     joblib.dump({"model": model, "feature_names": FEATURE_NAMES}, model_out)
-    print(f"model saved to {model_out}")
+    log.info("Model saved to %s", model_out)
     return model
 
 

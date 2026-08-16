@@ -38,7 +38,6 @@ def _get_bundle():
 
 def score_email(email: Union[EmailPayload, dict]) -> Layer1Score:
     email_dict = email.model_dump() if isinstance(email, EmailPayload) else dict(email)
-    email_dict["has_url_flag"] = int(bool(email_dict.get("urls")))
 
     bundle = _get_bundle()
     feature_names = bundle["feature_names"]

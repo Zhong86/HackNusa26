@@ -12,6 +12,12 @@ init_db()
 app = FastAPI(title="Sentinel Loop — Layer 2 Agent", version="0.1.0")
 app.include_router(router)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/health")
 def health():

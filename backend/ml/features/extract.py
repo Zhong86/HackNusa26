@@ -40,8 +40,76 @@ IMPERSONATED_BRANDS = {
 }
 
 
-def _url_features(has_url_flag: int) -> dict:
-    return {"has_url": int(has_url_flag)}
+# Known URL shorteners — a redirect through one of these hides the real
+# destination, a common phishing trick to dodge naive domain checks.
+URL_SHORTENERS = {
+    "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd",
+    "buff.ly", "rebrand.ly", "cutt.ly", "shorturl.at",
+}
+
+# TLDs disproportionately used for throwaway/phishing domains (cheap or
+# free registration, weak abuse enforcement). Not proof of malice on their
+# own — just a mild risk signal, same spirit as has_digit_in_domain.
+SUSPICIOUS_TLDS = {"xyz", "tk", "ml", "ga", "cf", "top", "click", "link", "work", "gq"}
+
+_IP_HOST_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
+
+
+def _url_features(urls: list[str]) -> dict:
+    """
+    urls: list of URL strings found in the email (see preprocess.py's
+    _extract_urls() for how these are pulled out of raw CEAS_08 body text
+    at training time; at serving time these come straight from
+    EmailPayload.urls). Both paths converge on the same list[str] shape
+    so this function never has to know which caller it's serving.
+    """
+    if not urls:
+        return {
+            "has_url": 0,
+            "num_urls": 0,
+            "has_ip_url": 0,
+            "has_shortener_url": 0,
+            "suspicious_tld_flag": 0,
+            "max_url_path_depth": 0,
+        }
+
+    has_ip = 0
+    has_shortener = 0
+    suspicious_tld = 0
+    max_depth = 0
+
+    for u in urls:
+        # be forgiving of bare domains with no scheme (e.g. "example.com/x")
+        candidate = u if "://" in u else f"http://{u}"
+        try:
+            parsed = urlparse(candidate)
+        except ValueError:
+            continue
+
+        host = (parsed.hostname or "").lower()
+        if not host:
+            continue
+
+        if _IP_HOST_RE.match(host):
+            has_ip = 1
+        if host in URL_SHORTENERS:
+            has_shortener = 1
+
+        tld = host.rsplit(".", 1)[-1] if "." in host else ""
+        if tld in SUSPICIOUS_TLDS:
+            suspicious_tld = 1
+
+        depth = len([p for p in parsed.path.split("/") if p])
+        max_depth = max(max_depth, depth)
+
+    return {
+        "has_url": 1,
+        "num_urls": len(urls),
+        "has_ip_url": has_ip,
+        "has_shortener_url": has_shortener,
+        "suspicious_tld_flag": suspicious_tld,
+        "max_url_path_depth": max_depth,
+    }
 
 
 def _text_features(subject: str, body: str) -> dict:
@@ -84,7 +152,7 @@ def extract_features(email: dict, include_embedding: bool = True) -> dict:
     features = {}
     features.update(_sender_features(email.get("sender"), email.get("display_name")))
     features.update(_text_features(email.get("subject"), email.get("body")))
-    features.update(_url_features(email.get("has_url_flag", 0)))
+    features.update(_url_features(email.get("urls") or []))
 
     if include_embedding:
         from ml.embeddings.features import embedding_features
@@ -96,7 +164,8 @@ def extract_features(email: dict, include_embedding: bool = True) -> dict:
 STRUCTURAL_FEATURE_NAMES = [
     "domain_length", "has_digit_in_domain", "display_name_mismatch",
     "keyword_hits", "subject_len", "body_len", "num_exclamations",
-    "has_url",
+    "has_url", "num_urls", "has_ip_url", "has_shortener_url",
+    "suspicious_tld_flag", "max_url_path_depth",
 ]
 
 # Populated lazily so importing this module doesn't require the embedding

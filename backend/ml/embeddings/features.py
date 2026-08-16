@@ -20,6 +20,7 @@ local embedding model isn't running.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 
@@ -32,6 +33,15 @@ log = logging.getLogger(__name__)
 
 CENTROIDS_PATH = Path(__file__).resolve().parents[1] / "models" / "embedding_centroids.joblib"
 
+# Raw-vector cache, keyed by a hash of the (subject, body) text — not by
+# row index, since callers here (preprocess.py per-row, classifier.py
+# per-request) have no shared/stable index. Content-hash keying means
+# identical emails (duplicate rows, or repeated scoring during iteration)
+# never re-hit Ollama, and — like build_centroids.py's per-row cache —
+# we persist after every single embedding call so an interrupted
+# preprocess.py run resumes instead of re-embedding rows already paid for.
+CACHE_PATH = Path(__file__).resolve().parents[1] / "models" / "_embedding_cache" / "vector_cache.joblib"
+
 EMBEDDING_FEATURE_NAMES = [
     "embed_phishing_similarity",
     "embed_benign_similarity",
@@ -39,6 +49,8 @@ EMBEDDING_FEATURE_NAMES = [
 ]
 
 _centroids_cache = None
+_vector_cache: dict[str, list[float]] | None = None
+_warned_unavailable = [False]  # list as a mutable module-level flag
 
 
 def _cosine(a: np.ndarray, b: np.ndarray) -> float:
@@ -46,6 +58,35 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     if denom == 0:
         return 0.0
     return float(np.dot(a, b) / denom)
+
+
+def _text_key(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _load_vector_cache() -> dict[str, list[float]]:
+    global _vector_cache
+    if _vector_cache is None:
+        _vector_cache = joblib.load(CACHE_PATH) if CACHE_PATH.exists() else {}
+    return _vector_cache
+
+
+def _save_vector_cache() -> None:
+    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(_vector_cache, CACHE_PATH)
+
+
+def _cached_embed_text(text: str) -> list[float]:
+    """embed_text(), but checks/writes the on-disk cache first."""
+    cache = _load_vector_cache()
+    key = _text_key(text)
+    if key in cache:
+        return cache[key]
+
+    vec = embed_text(text)
+    cache[key] = vec
+    _save_vector_cache()  # flush immediately — resumable across interrupts
+    return vec
 
 
 def _load_centroids():
@@ -78,13 +119,23 @@ def embedding_features(subject: str, body: str) -> dict:
     if centroids is None:
         return neutral
 
-    if not backend_available():
-        log.warning("Ollama embedding backend unreachable — using neutral embedding features")
+    text = f"{subject or ''} {body or ''}".strip()
+
+    key = _text_key(text)
+    cache = _load_vector_cache()
+    if key not in cache and not backend_available():
+        if not _warned_unavailable[0]:
+            log.warning(
+                "Ollama embedding backend unreachable — using neutral embedding features "
+                "(further occurrences this run are logged at DEBUG level)"
+            )
+            _warned_unavailable[0] = True
+        else:
+            log.debug("Ollama embedding backend unreachable — using neutral embedding features")
         return neutral
 
-    text = f"{subject or ''} {body or ''}".strip()
     try:
-        vec = np.array(embed_text(text))
+        vec = np.array(_cached_embed_text(text))
     except EmbeddingBackendError as e:
         log.warning("Embedding call failed, using neutral features: %s", e)
         return neutral
