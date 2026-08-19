@@ -100,6 +100,130 @@ function KeyVal({ label, value }) {
   );
 }
 
+// --- Layer 1 feature breakdown --------------------------------------
+// layer1_score.features is a flat dict of every structural + embedding
+// feature extract.py computed for this email. We surface it as readable
+// indicators so an analyst can see *why* the score landed where it did,
+// not just the number itself — this is the actual "why" behind an
+// allow/quarantine decision made without ever touching Layer 2.
+
+const FLAG_FEATURES = [
+  { key: "display_name_mismatch", label: "Display name impersonates a known brand" },
+  { key: "org_identity_mismatch", label: "Display name claims an org identity the domain doesn't match" },
+  { key: "has_digit_in_domain", label: "Digit substitution in sending domain (lookalike)" },
+  { key: "has_ip_url", label: "Link points to a raw IP address" },
+  { key: "has_shortener_url", label: "Link uses a URL shortener" },
+  { key: "suspicious_tld_flag", label: "Link uses a high-risk TLD" },
+];
+
+const SCORE_FEATURES = [
+  { key: "urgency_score", label: "Urgency language hits" },
+  { key: "financial_request_score", label: "Financial-request language hits" },
+  { key: "credential_request_score", label: "Credential-request language hits" },
+];
+
+function featureSummaryLine(features) {
+  if (!features) return null;
+  const firedFlags = FLAG_FEATURES.filter((f) => features[f.key] === 1).map((f) => f.label);
+  const scoreHits = SCORE_FEATURES.filter((f) => (features[f.key] ?? 0) > 0);
+  if (firedFlags.length === 0 && scoreHits.length === 0) {
+    return "No structural red flags or suspicious-language hits fired. The score reflects semantic similarity to known phishing/benign examples and general email shape.";
+  }
+  const parts = [];
+  if (firedFlags.length) parts.push(firedFlags.join("; "));
+  if (scoreHits.length) {
+    parts.push(scoreHits.map((f) => `${f.label} (${features[f.key]})`).join("; "));
+  }
+  return parts.join(". ") + ".";
+}
+
+function FeatureBreakdown({ features }) {
+  if (!features) return null;
+
+  const firedFlags = FLAG_FEATURES.filter((f) => features[f.key] === 1);
+  const clearFlags = FLAG_FEATURES.filter((f) => features[f.key] === 0);
+  const hasEmbedding = "embed_similarity_margin" in features;
+
+  return (
+    <div className="feature-breakdown">
+      <p className="feature-summary">{featureSummaryLine(features)}</p>
+
+      {firedFlags.length > 0 && (
+        <div className="feature-group">
+          <div className="feature-group-title">Flags triggered</div>
+          <div className="feature-flags">
+            {firedFlags.map((f) => (
+              <span key={f.key} className="feature-flag feature-flag-hit">
+                ⚠ {f.label}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="feature-group">
+        <div className="feature-group-title">Language signals</div>
+        <div className="feature-score-row">
+          {SCORE_FEATURES.map((f) => (
+            <div
+              key={f.key}
+              className={`feature-score-chip ${features[f.key] > 0 ? "feature-score-chip-hit" : ""}`}
+            >
+              <span className="feature-score-chip-val">{features[f.key] ?? 0}</span>
+              <span className="feature-score-chip-label">{f.label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {hasEmbedding && (
+        <div className="feature-group">
+          <div className="feature-group-title">Semantic similarity</div>
+          <div className="feature-score-row">
+            <div className="feature-score-chip">
+              <span className="feature-score-chip-val">
+                {features.embed_phishing_similarity?.toFixed(3)}
+              </span>
+              <span className="feature-score-chip-label">to known phishing</span>
+            </div>
+            <div className="feature-score-chip">
+              <span className="feature-score-chip-val">
+                {features.embed_benign_similarity?.toFixed(3)}
+              </span>
+              <span className="feature-score-chip-label">to known benign</span>
+            </div>
+            <div
+              className={`feature-score-chip ${
+                features.embed_similarity_margin > 0 ? "feature-score-chip-hit" : ""
+              }`}
+            >
+              <span className="feature-score-chip-val">
+                {features.embed_similarity_margin?.toFixed(3)}
+              </span>
+              <span className="feature-score-chip-label">margin (+ = phishing-leaning)</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {clearFlags.length > 0 && (
+        <details className="feature-clear-details">
+          <summary>
+            {clearFlags.length} other check{clearFlags.length === 1 ? "" : "s"} passed clean
+          </summary>
+          <div className="feature-flags">
+            {clearFlags.map((f) => (
+              <span key={f.key} className="feature-flag feature-flag-clear">
+                ✓ {f.label}
+              </span>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
 export default function SentinelLoopApp() {
   const [form, setForm] = useState(SAMPLE_EMAILS[1].email);
   const [urlsText, setUrlsText] = useState(SAMPLE_EMAILS[1].email.urls.join("\n"));
@@ -157,7 +281,12 @@ export default function SentinelLoopApp() {
 
   const state = result?.state;
   const trace = result?.trace || [];
-  const wasUncertain = trace.includes("gather_context_node");
+  // gather_context_node currently short-circuits with `return {}` before it
+  // appends itself to trace (see backend/graph/nodes.py), so it never shows
+  // up here even when the graph does route through Layer 2. reason_node and
+  // auto_decide_node don't have that bug, so use those as the reliable
+  // signal instead.
+  const wasUncertain = trace.includes("reason_node") || trace.includes("auto_decide_node");
   const verdictKey = state?.final_verdict;
   const verdictStyle = verdictKey ? VERDICT_STYLE[verdictKey] : null;
 
@@ -258,49 +387,37 @@ export default function SentinelLoopApp() {
           {result && state && (
             <>
               <div className="stages">
-                <Stage index={1} title="Layer 1 — classifier score" status="done">
-                  {state.layer1_score && <ScoreMeter score={state.layer1_score.score} />}
+                <Stage index={1} title="Classifier score" status="done">
+                  {state.layer1_score && (
+                    <>
+                      <ScoreMeter score={state.layer1_score.score} />
+                      <FeatureBreakdown features={state.layer1_score.features} />
+                    </>
+                  )}
                 </Stage>
 
                 <Stage
                   index={2}
-                  title={wasUncertain ? "Routed to Layer 2 (uncertain zone)" : "Routed to direct decision (confident)"}
+                  title={wasUncertain ? "Escalated for deeper reasoning" : "Decided directly"}
                   status="done"
                 >
                   <p className="stage-note">
                     {wasUncertain
-                      ? "Score fell inside the uncertain band, so context gathering and reasoning ran."
-                      : "Score was outside the uncertain band, so Layer 2 was skipped entirely."}
+                      ? "The score fell in an uncertain range, so the system gathered more context and reasoned through it before deciding."
+                      : "The score was confident enough to decide on its own — no further reasoning was needed."}
                   </p>
-                </Stage>
 
-                <Stage index={3} title="Layer 2 — context gathered" status={wasUncertain ? "done" : "skipped"}>
-                  {state.context && (
+                  {wasUncertain && state.context && (
                     <div className="context-grid">
                       <div className="context-card">
                         <div className="context-card-title">Sender history</div>
                         <KeyVal label="seen before" value={state.context.sender_history?.seen_before} />
                         <KeyVal label="prior flags" value={state.context.sender_history?.prior_flag_count} />
                       </div>
-                      <div className="context-card">
-                        <div className="context-card-title">Domain age</div>
-                        <KeyVal label="age (days)" value={state.context.domain_age?.age_days} />
-                        <KeyVal label="newly registered" value={state.context.domain_age?.newly_registered} />
-                      </div>
-                      <div className="context-card">
-                        <div className="context-card-title">Threat intel</div>
-                        <KeyVal label="domain flagged" value={state.context.threat_intel?.domain_flagged} />
-                        <KeyVal
-                          label="malicious URLs"
-                          value={state.context.threat_intel?.matched_malicious_urls?.length ?? 0}
-                        />
-                      </div>
                     </div>
                   )}
-                </Stage>
 
-                <Stage index={4} title="Layer 2 — reasoning" status={wasUncertain ? "done" : "skipped"}>
-                  {state.reasoning && (
+                  {wasUncertain && state.reasoning && (
                     <div className="reasoning-block">
                       <p className="reasoning-text">{state.reasoning.justification}</p>
                       <div className="evidence-list">
@@ -548,7 +665,7 @@ const CSS = `
 }
 .stage-note { font-size: 12.5px; color: var(--text-dim); margin: 0; line-height: 1.5; }
 
-.meter { }
+.meter { margin-bottom: 14px; }
 .meter-track {
   position: relative;
   height: 8px;
@@ -625,6 +742,82 @@ const CSS = `
   margin-left: auto;
 }
 
+.feature-breakdown {
+  margin-top: 4px;
+  border-top: 1px dashed var(--panel-border);
+  padding-top: 12px;
+}
+.feature-summary {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.55;
+  margin: 0 0 12px;
+}
+.feature-group { margin-bottom: 12px; }
+.feature-group:last-child { margin-bottom: 0; }
+.feature-group-title {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.feature-flags { display: flex; flex-wrap: wrap; gap: 6px; }
+.feature-flag {
+  font-size: 11px;
+  font-family: var(--mono);
+  padding: 4px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--panel-border);
+}
+.feature-flag-hit {
+  color: var(--danger);
+  border-color: rgba(244,63,94,0.35);
+  background: rgba(244,63,94,0.08);
+}
+.feature-flag-clear {
+  color: var(--text-dim);
+  opacity: 0.85;
+}
+.feature-score-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.feature-score-chip {
+  background: #0D1117;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  min-width: 84px;
+}
+.feature-score-chip-hit {
+  border-color: rgba(245,158,11,0.4);
+  background: rgba(245,158,11,0.06);
+}
+.feature-score-chip-val {
+  display: block;
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 14px;
+}
+.feature-score-chip-hit .feature-score-chip-val { color: var(--warn); }
+.feature-score-chip-label {
+  display: block;
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  line-height: 1.3;
+}
+.feature-clear-details {
+  margin-top: 4px;
+}
+.feature-clear-details summary {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text-dim);
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+.feature-clear-details summary:hover { color: var(--text); }
+
 .verdict-wrap {
   margin-top: 8px;
   padding-top: 24px;
@@ -645,8 +838,16 @@ const CSS = `
   text-shadow: 0 0 12px color-mix(in srgb, var(--stamp-color) 50%, transparent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--stamp-color) 12%, transparent);
 }
+.verdict-source {
+  margin: 14px 0 0;
+  font-size: 11px;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+}
 .verdict-justification {
-  margin: 18px auto 0;
+  margin: 8px auto 0;
   max-width: 480px;
   font-size: 12.5px;
   color: var(--text-dim);

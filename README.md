@@ -1,19 +1,82 @@
+# Sentinel Loop
+
+**HackNusa 2026** — national cybersecurity hackathon by Telkom University × Kaspersky
+Track: *AI vs AI: Cyber Defense*
+
+Sentinel Loop is an agentic AI defender against AI-generated phishing. It demonstrates
+an arms race: an **attacker AI** rewrites known phishing emails to slip past a filter,
+a **two-layer defender** (fast ML classifier + LLM reasoning agent) catches them anyway,
+and the filter **retrains** on what the agent caught — so the next mutation round gets
+caught by Layer 1 alone.
+
+```
+attacker mutates email → Layer 1 (ML) filters → uncertain? → Layer 2 (agent) reasons
+                                                                     ↓
+                                          caught-but-missed examples feed retrain.py
+                                                                     ↓
+                                             Layer 1 now catches the mutation directly
+```
+
+## Why
+
+- BEC (business email compromise) losses: **>$55B** globally, 2013–2023 (FBI IC3)
+- **14x** surge in AI-generated phishing (Hoxhunt)
+- **3.4B** phishing emails sent daily (Zensec)
+
+AI is making phishing cheaper to generate and harder to fingerprint with static rules.
+Sentinel Loop's bet is that a system which *learns from what it misses* — instead of a
+filter that goes stale the moment attackers change their phrasing — is a better match
+for that arms race than either a static classifier or a slow, fully-manual SOC review.
+
+## Architecture
+
+**Layer 1 — ML filter** (`backend/ml/`)
+XGBoost classifier over structural + semantic features: sender/domain lookalikes,
+brand and org-identity impersonation, URL structure (shorteners, IPs, suspicious TLDs),
+urgency/financial/credential keyword scoring, and embedding similarity to phishing vs.
+benign centroids (local Ollama `bge-m3` embeddings). High/low confidence scores decide
+immediately; mid-range scores ("uncertain zone", configurable thresholds) escalate to
+Layer 2.
+
+**Layer 2 — reasoning agent** (`backend/graph/`, built on LangGraph)
+Only borderline cases reach here. Gathers context (sender history) and asks an LLM
+(OpenAI-compatible endpoint — Groq/Llama by default) to reason over the raw email and
+Layer 1's score, returning a structured verdict (`allow` / `quarantine` / `escalate`)
+with confidence, justification, evidence, and MITRE ATT&CK technique IDs. If the LLM
+call fails, the graph fails safe and auto-escalates rather than silently passing the
+email through.
+
+```
+START → score_node ─┬─ confident ──→ direct_decision_node ──→ END
+                     └─ uncertain ──→ gather_context_node → reason_node → auto_decide_node → END
+```
+
+> Current build runs fully automated (no `interrupt()` pause) since this is a research/
+> demo pipeline, not something sitting in front of real inboxes — every run goes
+> straight through to a final verdict so the trace can be observed end-to-end. A
+> human-in-the-loop pause on low-confidence Layer 2 output is on the roadmap (see below).
+
+**Attacker AI** (`backend/ml/attacker/mutate.py`)
+Takes a known-phishing email and asks an LLM to rewrite it — stripping obvious red-flag
+phrasing ("act now", "click here") while preserving the malicious intent — to probe
+whether Layer 1 still catches the rewritten version.
+
+**Retrain loop** (`backend/ml/training/retrain.py`)
+Feeds mutated emails the agent caught (but Layer 1 missed) back into the training set
+and refits Layer 1, fast enough to run live during a demo.
+
+## Roadmap
+
+- Human-in-the-loop pause (`interrupt()`) on low-confidence Layer 2 output
+- Multi-centroid embeddings (beyond a single phishing/benign centroid pair)
+- Agent tools for live domain/URL-redirect/attachment inspection
+- Fully closed self-improving loop: agent catches → retrain → re-attack → repeat
+
 # Model
 - Ollama bge:m3-latest
 
 # Postman Payloads
 ## Safe (<0.25)
-```json
-{
-  "email": {
-    "sender": "no-reply@github.com",
-    "display_name": "GitHub",
-    "subject": "[sentinel-loop] New pull request",
-    "body": "A new pull request was opened on sentinel-loop by teammate. Review it when you get a chance.",
-    "urls": ["https://github.com/org/sentinel-loop/pull/17"]
-  }
-}
-```
 ```json 
 {
   "email": {
@@ -37,29 +100,7 @@
   }
 }
 ```
-```json
-{
-  "email": {
-    "sender": "hr@acmecorp-benefits.com",
-    "display_name": "Acme HR",
-    "subject": "Update your benefits enrollment",
-    "body": "Open enrollment closes soon. Please review and confirm your selections in the portal.",
-    "urls": ["http://acmecorp-benefits.com/portal"]
-  }
-}
-```
 ## Malicious (>0.75)
-```json
-{
-  "email": {
-    "sender": "security@micr0soft-alerts.com",
-    "display_name": "Microsoft",
-    "subject": "Security alert: unusual activity detected",
-    "body": "Act now to confirm your account or it will be suspended within 24 hours. Click here urgently to verify.",
-    "urls": ["http://micr0soft-alerts.com/confirm"]
-  }
-}
-```
 ```json 
 {
   "email": {
