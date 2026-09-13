@@ -1,79 +1,19 @@
-# Sentinel Loop
+# Phishing Email Detector
 
 **HackNusa 2026** — national cybersecurity hackathon by Telkom University × Kaspersky
 Track: *AI vs AI: Cyber Defense*
 
-Sentinel Loop is an agentic AI defender against AI-generated phishing. It demonstrates
-an arms race: an **attacker AI** rewrites known phishing emails to slip past a filter,
-a **two-layer defender** (fast ML classifier + LLM reasoning agent) catches them anyway,
-and the filter **retrains** on what the agent caught — so the next mutation round gets
-caught by Layer 1 alone.
+An agentic AI defender against AI-generated phishing. Demonstrates an arms race: an attacker AI mutates phishing emails to evade detection, a two-layer defender (fast ML filter + reasoning agent) catches them anyway, and the system improves via a retrain loop.
 
-```
-attacker mutates email → Layer 1 (ML) filters → uncertain? → Layer 2 (agent) reasons
-                                                                     ↓
-                                          caught-but-missed examples feed retrain.py
-                                                                     ↓
-                                             Layer 1 now catches the mutation directly
-```
+**Layer 1 (ML filter):** Random Forest / XGBoost on phishing features (URL structure, sender domain, keyword patterns). High-confidence phishing → auto-quarantine; high-confidence safe → pass; uncertain → escalate to Layer 2.
 
-## Why
+**Layer 2 (LangGraph reasoning agent):** Only borderline cases reach here. Gathers extra context (sender history, threat-intel lookup, similarity to known templates) and outputs quarantine / escalate / allow with a written justification. Low confidence → human-in-the-loop via `interrupt()`.
 
-- BEC (business email compromise) losses: **>$55B** globally, 2013–2023 (FBI IC3)
-- **14x** surge in AI-generated phishing (Hoxhunt)
-- **3.4B** phishing emails sent daily (Zensec)
+## Possible improvements
 
-AI is making phishing cheaper to generate and harder to fingerprint with static rules.
-Sentinel Loop's bet is that a system which *learns from what it misses* — instead of a
-filter that goes stale the moment attackers change their phrasing — is a better match
-for that arms race than either a static classifier or a slow, fully-manual SOC review.
-
-## Architecture
-
-**Layer 1 — ML filter** (`backend/ml/`)
-XGBoost classifier over structural + semantic features: sender/domain lookalikes,
-brand and org-identity impersonation, URL structure (shorteners, IPs, suspicious TLDs),
-urgency/financial/credential keyword scoring, and embedding similarity to phishing vs.
-benign centroids (local Ollama `bge-m3` embeddings). High/low confidence scores decide
-immediately; mid-range scores ("uncertain zone", configurable thresholds) escalate to
-Layer 2.
-
-**Layer 2 — reasoning agent** (`backend/graph/`, built on LangGraph)
-Only borderline cases reach here. Gathers context (sender history) and asks an LLM
-(OpenAI-compatible endpoint — Groq/Llama by default) to reason over the raw email and
-Layer 1's score, returning a structured verdict (`allow` / `quarantine` / `escalate`)
-with confidence, justification, evidence, and MITRE ATT&CK technique IDs. If the LLM
-call fails, the graph fails safe and auto-escalates rather than silently passing the
-email through.
-
-```
-START → score_node ─┬─ confident ──→ direct_decision_node ──→ END
-                     └─ uncertain ──→ gather_context_node → reason_node → auto_decide_node → END
-```
-
-> Current build runs fully automated (no `interrupt()` pause) since this is a research/
-> demo pipeline, not something sitting in front of real inboxes — every run goes
-> straight through to a final verdict so the trace can be observed end-to-end. A
-> human-in-the-loop pause on low-confidence Layer 2 output is on the roadmap (see below).
-
-**Attacker AI** (`backend/ml/attacker/mutate.py`)
-Takes a known-phishing email and asks an LLM to rewrite it — stripping obvious red-flag
-phrasing ("act now", "click here") while preserving the malicious intent — to probe
-whether Layer 1 still catches the rewritten version.
-
-**Retrain loop** (`backend/ml/training/retrain.py`)
-Feeds mutated emails the agent caught (but Layer 1 missed) back into the training set
-and refits Layer 1, fast enough to run live during a demo.
-
-## Roadmap
-
-- Human-in-the-loop pause (`interrupt()`) on low-confidence Layer 2 output
-- Multi-centroid embeddings (beyond a single phishing/benign centroid pair)
-- Agent tools for live domain/URL-redirect/attachment inspection
-- Fully closed self-improving loop: agent catches → retrain → re-attack → repeat
-
-# Model
-- Ollama bge:m3-latest
+- Improve embedding values with a multi-centroid embedding system
+- Give the agent tools to properly look up domains, check URL redirects, and inspect attachments
+- Self-improving detection loop — emails the agent catches feed back into retraining the ML filter
 
 # Postman Payloads
 ## Safe (<0.25)
